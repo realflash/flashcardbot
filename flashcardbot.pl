@@ -61,7 +61,7 @@ $bot->on({
     }, sub { stopTest(filterMessageText(@_)) unless iSaidIt(@_)});
 $bot->on({
 		team	=> qr/.*/,												# Filters out 'ok' events that come back after posting a message
-        text    => qr/^(testoff)|(stoptest)|(donttestme)|(shutup)/i,				
+        text    => qr/^(stop)|(testoff)|(stoptest)|(donttestme)|(shutup)/i,				
         channel => qr/^\@/i,											# DM
     }, sub { stopTest(filterMessageText(@_)) unless iSaidIt(@_)});
 # Stop testing
@@ -86,12 +86,65 @@ while(1)
 {
 #	$log->trace("Waking up");
 	my $users = getUsers();
+	for my $user (@$users)
+	{
+		askUserQuestion($user) if(defined($user->{'NEXT_Q'}) && $user->{'NEXT_Q'} <= time && $user->{'ENABLED'});
+	}
+	# Schedule next run
+	my $min = 10;
+	my $max = 30;
+	my $next_q_secs = $min + int(rand($max-$min));
+	for my $user (@$users)
+	{	
+		setNextQuestionTime($user, time + $next_q_secs) unless defined($user->{'NEXT_Q'});
+	}
 #	print Dumper $users;
 #	$log->trace("Going to sleep");
-	sleep 5;
+	sleep 3;
 }	
 
 ############ FUNCTIONS #######################
+
+sub askUserQuestion
+{
+	my $user = shift;
+	
+	$log->trace("Asking user $user->{'USER'} a question");
+
+	my $stmt = qq(UPDATE USERS set next_q = ? WHERE UID = ?;);
+	my $sth = $dbh->prepare($stmt);
+	my $rv = $sth->execute(undef, $user->{'UID'}) or die $DBI::errstr;
+	if($rv < 0)
+	{
+		$log->logdie("Failed to update user: $DBI::errstr");
+	}
+	if($rv > 1)
+	{
+		$log->logdie("Failed to update user, got more than one row updated");
+	}
+	# Probably went OK
+	$log->trace("Unset next question time for $user->{'USER'}");
+}
+
+sub setNextQuestionTime
+{
+	my $user = shift;
+	my $time = shift;
+
+	my $stmt = qq(UPDATE USERS set next_q = ? WHERE UID = ?;);
+	my $sth = $dbh->prepare($stmt);
+	my $rv = $sth->execute($time, $user->{'UID'}) or die $DBI::errstr;
+	if($rv < 0)
+	{
+		$log->logdie("Failed to update user: $DBI::errstr");
+	}
+	if($rv > 1)
+	{
+		$log->logdie("Failed to update user, got more than one row updated");
+	}
+	# Probably went OK
+	$log->trace("Set next question time for $user->{'USER'} to $time");
+}
 
 sub echo
 {
@@ -106,10 +159,13 @@ sub echo
 sub startTest
 {
 	my ($event) = @_;
+	my $topic = "aircraft_checklists";
+
+	# Validate topic
 
     $log->info("Test requested by $event->{'user'}: $event->{text}");
-	setTestStatus($event->{'user'}, $event->{'team'}, 1, "aircraft_checklists");
-    $bot->say(channel => "@".$event->{'user'}, text => "I will start testing you from now, at random times.");
+	setTestStatus($event->{'user'}, $event->{'team'}, 1, $topic);
+    $bot->say(channel => "@".$event->{'user'}, text => "I will start testing you from now on the subject of $topic, at random times.");
     $_[0]->{'responded'} = 1;
 }	
 
@@ -134,9 +190,9 @@ sub setTestStatus
 	unless(defined($db_user))
 	{
 		$log->debug("User $team/$user is new to me");
-		my $stmt = qq(INSERT into USERS (user, team, topic, enabled) VALUES (?, ?, ?, ?););
+		my $stmt = qq(INSERT into USERS (user, team, topic, enabled, next_q) VALUES (?, ?, ?, ?, ?););
 		my $sth = $dbh->prepare($stmt);
-		my $rv = $sth->execute($user, $team, $topic, $status) or die $DBI::errstr;
+		my $rv = $sth->execute($user, $team, $topic, $status, undef) or die $DBI::errstr;
 		if($rv < 0)
 		{
 			$log->logdie("Failed to insert new user: $DBI::errstr");
@@ -223,7 +279,7 @@ sub commandNotKnown
 {
 	my ($event) = @_;
 	print Dumper $event;
-    $log->info("Command not known: $event->{text}");
+    $log->error("Command not known: $event->{text}");
     $bot->say(channel => $event->{'channel'}, text => "I'm sorry, I don't know that command. Try 'help'");
 }
 
