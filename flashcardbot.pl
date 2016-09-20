@@ -105,12 +105,39 @@ while(1)
 
 ############ FUNCTIONS #######################
 
+sub getTopic
+{
+	my $topic = shift;
+
+	my $stmt = qq(SELECT name FROM sqlite_master WHERE type='table' AND name=?);
+	my $sth = $dbh->prepare($stmt);
+	my $rv = $sth->execute($topic) or die $DBI::errstr;
+	if($rv < 0){
+		print $DBI::errstr;
+	}
+	return $sth->fetchrow_hashref();
+}
+
 sub askUserQuestion
 {
 	my $user = shift;
 	
 	$log->trace("Asking user $user->{'USER'} a question");
+	
+	# Validate topic
+	unless(defined(getTopic($user->{'TOPIC'})))
+	{
+		setTestStatus($user->{'USER'}, $user->{'TEAM'}, 0);
+		$bot->say(channel => "@".$user->{'USER'}, text => "Sorry, but the topic you selected ($user->{'TOPIC'}) is not valid.");
+		$log->error("Cancelled questioning for user $user->{'USER'} as their topic is invalid");
+		return;
+	}
 
+	# Get a random question
+	my $question = getRandomQuestion($user->{'TOPIC'});
+    $bot->say(channel => "@".$user->{'USER'}, text => "Q: $question->{'QUESTION'}");
+
+	# Reset next_q time to indicate that the user is ready for another question
 	my $stmt = qq(UPDATE USERS set next_q = ? WHERE UID = ?;);
 	my $sth = $dbh->prepare($stmt);
 	my $rv = $sth->execute(undef, $user->{'UID'}) or die $DBI::errstr;
@@ -124,6 +151,19 @@ sub askUserQuestion
 	}
 	# Probably went OK
 	$log->trace("Unset next question time for $user->{'USER'}");
+}
+
+sub getRandomQuestion
+{
+	my $topic = shift;
+
+	my $stmt = qq(SELECT * FROM $topic ORDER BY RANDOM() LIMIT 1;);
+	my $sth = $dbh->prepare($stmt);
+	my $rv = $sth->execute() or die $DBI::errstr;
+	if($rv < 0){
+		print $DBI::errstr;
+	}
+	return $sth->fetchrow_hashref();
 }
 
 sub setNextQuestionTime
@@ -159,10 +199,18 @@ sub echo
 sub startTest
 {
 	my ($event) = @_;
-	my $topic = "aircraft_checklists";
+	my $topic = "example";
 
 	# Validate topic
+	unless(defined(getTopic($topic)))
+	{
+		$bot->say(channel => "@".$event->{'user'}, text => "Sorry, but the topic you selected is not valid.");
+		$log->error("Have not started questioning for user $event->{'USER'} as their topic is invalid");
+		$_[0]->{'responded'} = 1;
+		return;
+	}
 
+	# Get going
     $log->info("Test requested by $event->{'user'}: $event->{text}");
 	setTestStatus($event->{'user'}, $event->{'team'}, 1, $topic);
     $bot->say(channel => "@".$event->{'user'}, text => "I will start testing you from now on the subject of $topic, at random times.");
@@ -172,6 +220,7 @@ sub startTest
 sub stopTest
 {
 	my ($event) = @_;
+	print Dumper $event;
 
     $log->info("Test stop requested by $event->{'user'}: $event->{text}");
 	setTestStatus($event->{'user'}, $event->{'team'}, 0);
